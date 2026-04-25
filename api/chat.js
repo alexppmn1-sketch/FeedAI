@@ -20,10 +20,10 @@ export default async function handler(req, res) {
   const GROQ_KEY = process.env.GROQ_API_KEY;
 
   if (!GROQ_KEY) {
-    return res.status(500).json({ error: 'API key not configured' });
+    return res.status(500).json({ error: 'API key not configured in Vercel' });
   }
 
-  // Берём последнее сообщение
+  // Берём последнее сообщение пользователя
   const lastMessage = messages[messages.length - 1];
   const userMessage = lastMessage.content || lastMessage.text || lastMessage || '';
 
@@ -40,23 +40,26 @@ export default async function handler(req, res) {
       })
     });
 
-    // 🔥 НОВОЕ: безопасно читаем ответ, даже если это не JSON
-    let data;
-    const contentType = r.headers.get('content-type') || '';
+    // 🔥 Читаем ответ как текст, чтобы увидеть HTML-ошибку
+    const responseText = await r.text();
 
-    if (contentType.includes('application/json')) {
-      data = await r.json();
-    } else {
-      const text = await r.text();
-      console.error('Non-JSON response from ApiFreeLLM:', text);
-      return res.status(502).json({ 
-        error: 'ApiFreeLLM returned invalid response (HTML error page)' 
+    // Пытаемся распарсить JSON
+    let data;
+    try {
+      data = JSON.parse(responseText);
+    } catch (e) {
+      // Если не JSON — возвращаем кусок HTML, чтобы увидеть реальную ошибку
+      console.error('Raw response from ApiFreeLLM:', responseText.substring(0, 800));
+      return res.status(502).json({
+        error: `ApiFreeLLM returned invalid response (status ${r.status})`,
+        details: responseText.substring(0, 500) + (responseText.length > 500 ? '...' : '')
       });
     }
 
     if (!r.ok) {
-      return res.status(r.status).json({ 
-        error: data?.error || data?.message || 'ApiFreeLLM error' 
+      return res.status(r.status).json({
+        error: data.error || data.message || 'ApiFreeLLM error',
+        status: r.status
       });
     }
 
