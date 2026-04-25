@@ -37,17 +37,18 @@ export default async function handler(req, res) {
     try {
       data = JSON.parse(responseText);
     } catch (e) {
-      // Если пришёл HTML — показываем его пользователю
       return res.status(502).json({
-        error: `ApiFreeLLM error (status ${r.status})`,
-        details: responseText.substring(0, 600)
+        error: `ApiFreeLLM returned non-JSON (status ${r.status})`,
+        raw: responseText.substring(0, 800)
       });
     }
 
+    // ←←← Вот самое важное сейчас
     if (!r.ok) {
       return res.status(r.status).json({
         error: data.error || data.message || `ApiFreeLLM error ${r.status}`,
-        details: data
+        details: data,
+        status: r.status
       });
     }
 
