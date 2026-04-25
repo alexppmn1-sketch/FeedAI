@@ -23,9 +23,9 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'API key not configured' });
   }
 
-  // Берём последнее сообщение пользователя (ApiFreeLLM принимает простой текст)
+  // Берём последнее сообщение
   const lastMessage = messages[messages.length - 1];
-  const userMessage = lastMessage.content || lastMessage.text || '';
+  const userMessage = lastMessage.content || lastMessage.text || lastMessage || '';
 
   try {
     const r = await fetch('https://apifreellm.com/api/v1/chat', {
@@ -40,21 +40,32 @@ export default async function handler(req, res) {
       })
     });
 
-    const data = await r.json();
+    // 🔥 НОВОЕ: безопасно читаем ответ, даже если это не JSON
+    let data;
+    const contentType = r.headers.get('content-type') || '';
 
-    if (!r.ok) {
-      return res.status(r.status).json({ 
-        error: data.error || data.message || 'ApiFreeLLM error' 
+    if (contentType.includes('application/json')) {
+      data = await r.json();
+    } else {
+      const text = await r.text();
+      console.error('Non-JSON response from ApiFreeLLM:', text);
+      return res.status(502).json({ 
+        error: 'ApiFreeLLM returned invalid response (HTML error page)' 
       });
     }
 
-    // ApiFreeLLM возвращает ответ в поле "response"
+    if (!r.ok) {
+      return res.status(r.status).json({ 
+        error: data?.error || data?.message || 'ApiFreeLLM error' 
+      });
+    }
+
     const reply = data.response || data.message || 'Нет ответа от модели';
 
     return res.status(200).json({ reply });
 
   } catch (e) {
-    console.error(e);
+    console.error('Chat handler error:', e);
     return res.status(500).json({ error: e.message || 'Internal server error' });
   }
 }
