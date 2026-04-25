@@ -37,18 +37,16 @@ export default async function handler(req, res) {
     try {
       data = JSON.parse(responseText);
     } catch (e) {
+      // 🔥 Возвращаем полный текст ошибки от ApiFreeLLM
       return res.status(502).json({
-        error: `ApiFreeLLM returned non-JSON (status ${r.status})`,
-        raw: responseText.substring(0, 800)
+        error: `ApiFreeLLM error (status ${r.status}): ${responseText.substring(0, 700)}`
       });
     }
 
-    // ←←← Вот самое важное сейчас
     if (!r.ok) {
       return res.status(r.status).json({
         error: data.error || data.message || `ApiFreeLLM error ${r.status}`,
-        details: data,
-        status: r.status
+        details: data
       });
     }
 
