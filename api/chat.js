@@ -1,29 +1,20 @@
 export default async function handler(req, res) {
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end();
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { messages } = req.body;
-
   if (!messages || !Array.isArray(messages) || messages.length === 0) {
-    return res.status(400).json({ error: 'Invalid request: messages array required' });
+    return res.status(400).json({ error: 'Invalid request' });
   }
 
   const GROQ_KEY = process.env.GROQ_API_KEY;
-
   if (!GROQ_KEY) {
     return res.status(500).json({ error: 'API key not configured in Vercel' });
   }
 
-  // Берём последнее сообщение пользователя
   const lastMessage = messages[messages.length - 1];
   const userMessage = lastMessage.content || lastMessage.text || lastMessage || '';
 
@@ -40,35 +31,31 @@ export default async function handler(req, res) {
       })
     });
 
-    // 🔥 Читаем ответ как текст, чтобы увидеть HTML-ошибку
     const responseText = await r.text();
 
-    // Пытаемся распарсить JSON
     let data;
     try {
       data = JSON.parse(responseText);
     } catch (e) {
-      // Если не JSON — возвращаем кусок HTML, чтобы увидеть реальную ошибку
-      console.error('Raw response from ApiFreeLLM:', responseText.substring(0, 800));
+      // Если пришёл HTML — показываем его пользователю
       return res.status(502).json({
-        error: `ApiFreeLLM returned invalid response (status ${r.status})`,
-        details: responseText.substring(0, 500) + (responseText.length > 500 ? '...' : '')
+        error: `ApiFreeLLM error (status ${r.status})`,
+        details: responseText.substring(0, 600)
       });
     }
 
     if (!r.ok) {
       return res.status(r.status).json({
-        error: data.error || data.message || 'ApiFreeLLM error',
-        status: r.status
+        error: data.error || data.message || `ApiFreeLLM error ${r.status}`,
+        details: data
       });
     }
 
-    const reply = data.response || data.message || 'Нет ответа от модели';
-
+    const reply = data.response || data.message || 'Нет ответа';
     return res.status(200).json({ reply });
 
   } catch (e) {
-    console.error('Chat handler error:', e);
-    return res.status(500).json({ error: e.message || 'Internal server error' });
+    console.error(e);
+    return res.status(500).json({ error: e.message });
   }
 }
