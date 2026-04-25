@@ -15,47 +15,31 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'API key not configured in Vercel' });
   }
 
-  const lastMessage = messages[messages.length - 1];
-  const userMessage = lastMessage.content || lastMessage.text || lastMessage || '';
-
   try {
-    const r = await fetch('https://apifreellm.com/api/v1/chat', {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROQ_KEY}`,
-        // 🔥 Эти заголовки обходят Cloudflare
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
-        'Referer': 'https://apifreellm.com/'
+        'Authorization': `Bearer ${GROQ_KEY}`
       },
       body: JSON.stringify({
-        message: userMessage,
-        model: 'apifreellm'
+        model: 'llama-3.1-8b-instant',     // ← самая выгодная модель по лимитам
+        messages: messages,
+        max_tokens: 1024,
+        temperature: 0.72
       })
     });
 
-    const responseText = await r.text();
-
-    let data;
-    try {
-      data = JSON.parse(responseText);
-    } catch (e) {
-      return res.status(502).json({
-        error: `ApiFreeLLM blocked by Cloudflare (status ${r.status})`,
-        details: responseText.substring(0, 700)
-      });
-    }
+    const data = await r.json();
 
     if (!r.ok) {
-      return res.status(r.status).json({
-        error: data.error || data.message || `ApiFreeLLM error ${r.status}`,
-        details: data
+      return res.status(r.status).json({ 
+        error: data.error?.message || 'Groq error' 
       });
     }
 
-    const reply = data.response || data.message || 'Нет ответа';
+    const reply = data.choices?.[0]?.message?.content || 'Нет ответа';
+
     return res.status(200).json({ reply });
 
   } catch (e) {
