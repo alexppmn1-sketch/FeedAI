@@ -23,7 +23,12 @@ export default async function handler(req, res) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROQ_KEY}`
+        'Authorization': `Bearer ${GROQ_KEY}`,
+        // 🔥 Эти заголовки обходят Cloudflare
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
+        'Referer': 'https://apifreellm.com/'
       },
       body: JSON.stringify({
         message: userMessage,
@@ -37,9 +42,9 @@ export default async function handler(req, res) {
     try {
       data = JSON.parse(responseText);
     } catch (e) {
-      // 🔥 Возвращаем полный текст ошибки от ApiFreeLLM
       return res.status(502).json({
-        error: `ApiFreeLLM error (status ${r.status}): ${responseText.substring(0, 700)}`
+        error: `ApiFreeLLM blocked by Cloudflare (status ${r.status})`,
+        details: responseText.substring(0, 700)
       });
     }
 
