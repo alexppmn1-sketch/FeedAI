@@ -1,154 +1,110 @@
-cat > /home/claude/feed-final/api/chat.js << 'EOF'
-export default async function handler(req, res) {
-  if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    return res.status(200).end();
-  }
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+// api/chat.js
+const Groq = require('groq-sdk');
+const { tavily } = require('@tavily/core');
+require('dotenv').config();
 
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY });
 
-  const { messages } = req.body;
-  if (!messages || !Array.isArray(messages)) {
-    res.write(`data: ${JSON.stringify({ error: 'Invalid request' })}\n\n`);
-    return res.end();
-  }
-
-  const GROQ_KEY = process.env.GROQ_API_KEY;
-  const TAVILY_KEY = process.env.TAVILY_API_KEY;
-
-  if (!GROQ_KEY) {
-    res.write(`data: ${JSON.stringify({ error: 'API key not configured' })}\n\n`);
-    return res.end();
-  }
-
-  // ── Step 1: Ask Groq if web search is needed ──
-  const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
-  const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : '';
-
-  let searchContext = '';
-  let searchSources = [];
-
-  if (TAVILY_KEY && userText) {
-    // Quick check: does this query need real-time info?
-    const needsSearch = await checkIfNeedsSearch(userText, GROQ_KEY);
-
-    if (needsSearch) {
-      try {
-        const searchResult = await tavilySearch(userText, TAVILY_KEY);
-        if (searchResult.results && searchResult.results.length > 0) {
-          searchContext = '\n\n[WEB SEARCH RESULTS - use this real-time data to answer]:\n';
-          searchResult.results.slice(0, 4).forEach((r, i) => {
-            searchContext += `\n[${i+1}] ${r.title}\nURL: ${r.url}\nContent: ${r.content}\n`;
-            searchSources.push({ title: r.title, url: r.url });
-          });
-          searchContext += '\n[END OF SEARCH RESULTS]\n';
-          searchContext += 'Use the above search results to give an accurate, up-to-date answer. Include relevant URLs as clickable links when helpful.';
-        }
-      } catch (e) {
-        // Search failed silently — continue without it
-      }
-    }
-  }
-
-  // ── Step 2: Build messages with search context ──
-  let augmentedMessages = [...messages];
-  if (searchContext) {
-    // Inject search results into the last user message
-    augmentedMessages = messages.map((m, i) => {
-      if (i === messages.length - 1 && m.role === 'user') {
-        return { ...m, content: (typeof m.content === 'string' ? m.content : '') + searchContext };
-      }
-      return m;
-    });
-  }
-
-  // ── Step 3: Stream response from Groq ──
-  try {
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${GROQ_KEY}`
+// === Tavily Tool Definition ===
+const tavilyTool = {
+  type: "function",
+  function: {
+    name: "web_search",
+    description: "Поиск актуальной информации в интернете в реальном времени. Используй когда нужно свежие данные, погоду, новости, цены и т.д.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Что искать (на русском или английском)",
+        },
+        max_results: { type: "number", default: 5 },
       },
-      body: JSON.stringify({
-        model: 'llama-3.1-70b-versatile',
-        messages: augmentedMessages,
-        max_tokens: 1024,
-        temperature: 0.72,
-        stream: true
-      })
+      required: ["query"],
+    },
+  },
+};
+
+// === Выполнение инструмента ===
+async function executeTool(toolCall) {
+  if (toolCall.function.name === "web_search") {
+    const args = JSON.parse(toolCall.function.arguments);
+    console.log(`[Tavily] Поиск: ${args.query}`);
+
+    const results = await tvly.search({
+      query: args.query,
+      max_results: args.max_results || 5,
+      search_depth: "advanced", // или "basic"
     });
 
-    // Send sources first if we have them
-    if (searchSources.length > 0) {
-      res.write(`data: ${JSON.stringify({ sources: searchSources })}\n\n`);
-    }
-
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const raw = line.slice(6).trim();
-          if (raw === '[DONE]') { res.write('data: [DONE]\n\n'); continue; }
-          try {
-            const json = JSON.parse(raw);
-            const delta = json.choices?.[0]?.delta?.content;
-            if (delta) res.write(`data: ${JSON.stringify({ token: delta })}\n\n`);
-          } catch {}
-        }
-      }
-    }
-  } catch (e) {
-    res.write(`data: ${JSON.stringify({ error: e.message })}\n\n`);
+    return {
+      tool_call_id: toolCall.id,
+      role: "tool",
+      name: "web_search",
+      content: JSON.stringify(results.results || results), // возвращаем результаты
+    };
   }
-  res.end();
+  return null;
 }
 
-// ── Check if query needs web search ──
-async function checkIfNeedsSearch(query, groqKey) {
-  const keywords = [
-    'погода', 'weather', 'сегодня', 'today', 'сейчас', 'now', 'новости', 'news',
-    'курс', 'price', 'цена', 'rate', 'акции', 'stock', 'биткоин', 'bitcoin', 'крипто', 'crypto',
-    'последние', 'latest', 'текущий', 'current', 'живой', 'live', 'онлайн', 'online',
-    'расписание', 'schedule', 'матч', 'match', 'игра', 'game', 'счёт', 'score',
-    'где', 'where', 'когда', 'when', 'who is', 'кто такой', 'что такое',
-    'ресторан', 'restaurant', 'кафе', 'cafe', 'адрес', 'address', 'сайт', 'website',
-    'вакансия', 'job', 'работа', 'трафик', 'traffic', 'пробки', 'flight', 'рейс',
-    '2024', '2025', '2026', 'произошло', 'happened', 'вышел', 'released',
-    'найди', 'find', 'поищи', 'search', 'покажи', 'show me', 'список', 'list of'
-  ];
-  const q = query.toLowerCase();
-  return keywords.some(k => q.includes(k));
-}
+// === Основной обработчик чата ===
+module.exports = async function chatHandler(req, res) {
+  try {
+    const { messages, model = "llama-3.3-70b-versatile" } = req.body;
 
-// ── Tavily web search ──
-async function tavilySearch(query, apiKey) {
-  const r = await fetch('https://api.tavily.com/search', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      api_key: apiKey,
-      query: query,
-      search_depth: 'basic',
-      max_results: 5,
-      include_answer: false,
-      include_raw_content: false
-    })
-  });
-  return r.json();
-}
-EOF
-echo "chat.js written, lines: $(wc -l < /home/claude/feed-final/api/chat.js)"
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: "messages required" });
+    }
+
+    let currentMessages = [...messages];
+
+    const maxIterations = 5; // защита от бесконечного цикла
+    let iteration = 0;
+
+    while (iteration < maxIterations) {
+      iteration++;
+
+      const completion = await groq.chat.completions.create({
+        model: model,
+        messages: currentMessages,
+        tools: [tavilyTool],
+        tool_choice: "auto",
+        temperature: 0.7,
+        max_tokens: 1024,
+      });
+
+      const responseMessage = completion.choices[0].message;
+
+      // Добавляем ответ модели в историю
+      currentMessages.push(responseMessage);
+
+      // Если модель не хочет вызывать инструменты — выходим
+      if (!responseMessage.tool_calls || responseMessage.tool_calls.length === 0) {
+        return res.json({
+          content: responseMessage.content,
+          usage: completion.usage,
+        });
+      }
+
+      // Выполняем все tool calls (Tavily)
+      const toolResults = [];
+      for (const toolCall of responseMessage.tool_calls) {
+        const result = await executeTool(toolCall);
+        if (result) toolResults.push(result);
+      }
+
+      // Добавляем результаты инструментов обратно в чат
+      currentMessages.push(...toolResults);
+    }
+
+    // Если вышли по лимиту итераций
+    res.json({
+      content: "Извини, слишком много шагов поиска. Попробуй уточнить запрос.",
+    });
+
+  } catch (error) {
+    console.error("Chat error:", error);
+    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+  }
+};
