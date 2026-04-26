@@ -21,18 +21,18 @@ export default async function handler(req, res) {
   const TAVILY_KEY = process.env.TAVILY_API_KEY;
 
   if (!GROQ_KEY) {
-    res.write(`data: ${JSON.stringify({ error: 'API key not configured' })}\n\n`);
+    res.write(`data: ${JSON.stringify({ error: 'GROQ_API_KEY not configured' })}\n\n`);
     return res.end();
   }
 
-  // === Определение модели (текст или vision) ===
+  // === Определение модели ===
   const hasImage = messages.some(msg => {
     if (!msg.content) return false;
     if (typeof msg.content === 'string') return msg.content.includes('data:image');
     if (Array.isArray(msg.content)) {
       return msg.content.some(item => 
         item.type === 'image_url' || 
-        (item.image_url && item.image_url.url && item.image_url.url.includes('data:image'))
+        (item.image_url && item.image_url.url?.includes('data:image'))
       );
     }
     return false;
@@ -42,7 +42,7 @@ export default async function handler(req, res) {
     ? "meta-llama/llama-4-scout-17b-16e-instruct" 
     : "llama-3.1-8b-instant";
 
-  console.log(`[DEBUG] Выбрана модель: ${model} (изображение: ${hasImage})`);
+  console.log(`[DEBUG] Запрос. Модель: ${model} | Изображение: ${hasImage} | Сообщений: ${messages.length}`);
 
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
   const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : '';
@@ -55,14 +55,16 @@ export default async function handler(req, res) {
     try {
       const result = await tavilySearch(userText, TAVILY_KEY);
       if (result.results?.length) {
-        searchContext = '\n\n[WEB SEARCH RESULTS - use this real-time data]:\n';
+        searchContext = '\n\n[WEB SEARCH RESULTS]:\n';
         result.results.slice(0, 5).forEach((r, i) => {
           searchContext += `\n[${i+1}] ${r.title}\nURL: ${r.url}\nContent: ${r.content}\n`;
           searchSources.push({ title: r.title, url: r.url });
         });
-        searchContext += '\n[END SEARCH RESULTS]\nUse the above to answer accurately. Include relevant URLs as markdown links [text](url) when helpful.';
+        searchContext += '\n[END SEARCH RESULTS]\n';
       }
-    } catch (e) { /* silent fail */ }
+    } catch (e) {
+      console.error('[Tavily] Error:', e);
+    }
   }
 
   let augmentedMessages = messages.map((m, i) => {
@@ -84,13 +86,21 @@ export default async function handler(req, res) {
         'Authorization': `Bearer ${GROQ_KEY}` 
       },
       body: JSON.stringify({
-        model: model,                    // ← теперь динамически
+        model: model,
         messages: augmentedMessages,
         max_tokens: 1024,
         temperature: 0.7,
         stream: true
       })
     });
+
+    // ←←← НОВАЯ ОБРАБОТКА ОШИБОК
+    if (!r.ok) {
+      const errorText = await r.text();
+      console.error(`[Groq Error] ${r.status}:`, errorText);
+      res.write(`data: ${JSON.stringify({ error: `Groq API error ${r.status}` })}\n\n`);
+      return res.end();
+    }
 
     const reader = r.body.getReader();
     const decoder = new TextDecoder();
@@ -99,36 +109,40 @@ export default async function handler(req, res) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
-      buffer = lines.pop();
+      buffer = lines.pop() || '';
+
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           const raw = line.slice(6).trim();
-          if (raw === '[DONE]') { 
-            res.write('data: [DONE]\n\n'); 
-            continue; 
+          if (raw === '[DONE]') {
+            res.write('data: [DONE]\n\n');
+            continue;
           }
           try {
             const json = JSON.parse(raw);
             const delta = json.choices?.[0]?.delta?.content;
-            if (delta) res.write(`data: ${JSON.stringify({ token: delta })}\n\n`);
-          } catch {}
+            if (delta) {
+              res.write(`data: ${JSON.stringify({ token: delta })}\n\n`);
+            }
+          } catch (e) {}
         }
       }
     }
+
+    console.log('[DEBUG] Streaming успешно завершён');
   } catch (e) {
-    res.write(`data: ${JSON.stringify({ error: e.message })}\n\n`);
+    console.error('[Chat Error]:', e);
+    res.write(`data: ${JSON.stringify({ error: e.message || 'Unknown error' })}\n\n`);
   }
+
   res.end();
 }
 
 function needsSearch(query) {
-  const keywords = [
-    'погода','weather','прогноз','forecast','сегодня','today','сейчас','now',
-    'новости','news','последние','latest','курс','price','цена','биткоин','bitcoin',
-    'найди','find','поищи','search','покажи','show me','кто такой','who is'
-  ];
+  const keywords = ['погода','weather','прогноз','новости','news','курс','price','цена','биткоин','bitcoin','найди','find','поищи'];
   const q = query.toLowerCase();
   return keywords.some(k => q.includes(k));
 }
@@ -141,9 +155,7 @@ async function tavilySearch(query, apiKey) {
       api_key: apiKey,
       query,
       search_depth: 'basic',
-      max_results: 5,
-      include_answer: false,
-      include_raw_content: false
+      max_results: 5
     })
   });
   return r.json();
