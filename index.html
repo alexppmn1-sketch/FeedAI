@@ -175,6 +175,19 @@ textarea#inp::placeholder{color:var(--muted2)}
 .v-close:hover{background:rgba(255,255,255,.1);color:#fff}
 
 #file-inp{display:none}
+/* SOURCES */
+.sources{margin-top:8px;display:flex;flex-direction:column;gap:5px}
+.src-label{font-size:11px;color:var(--muted2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:2px}
+.src-link{display:flex;align-items:center;gap:7px;padding:7px 10px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:9px;text-decoration:none;color:var(--muted);font-size:12.5px;transition:all .2s;overflow:hidden}
+.src-link:hover{background:rgba(220,100,25,.1);border-color:rgba(220,100,25,.25);color:#fff}
+.src-icon{width:14px;height:14px;flex-shrink:0;opacity:.6}
+.src-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.src-domain{font-size:11px;color:var(--muted2);flex-shrink:0}
+
+/* SEARCH INDICATOR */
+.searching{display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(220,100,25,.07);border:1px solid rgba(220,100,25,.15);border-radius:10px;font-size:13px;color:rgba(220,150,80,.9);animation:pulse-search 1.5s ease-in-out infinite}
+@keyframes pulse-search{0%,100%{opacity:.7}50%{opacity:1}}
+
 
 /* ── RESPONSIVE ── */
 /* iPhone SE, small screens */
@@ -338,7 +351,7 @@ function toggleSb(){document.getElementById('sb').classList.toggle('open');docum
 function closeSb(){document.getElementById('sb').classList.remove('open');document.getElementById('sb-ov').classList.remove('show');}
 
 // SYSTEM PROMPT — language mirroring
-const SYS=`You are Feed AI, a smart and charismatic AI assistant. CRITICAL LANGUAGE RULE: You MUST respond in the exact same language the user writes in. If the user writes in Russian — respond ONLY in Russian. If in English — respond ONLY in English. If in Ukrainian — respond ONLY in Ukrainian. If in any other language — respond ONLY in that same language. Never switch languages regardless of the topic. Help with any task. Never mention Llama, Groq, Gemini or Meta — you are Feed AI.`;
+const SYS=`You are Feed AI, a smart and charismatic AI assistant with access to real-time web search. CRITICAL LANGUAGE RULE: You MUST respond in the exact same language the user writes in. If the user writes in Russian — respond ONLY in Russian. If in English — respond ONLY in English. If in Ukrainian — respond ONLY in Ukrainian. If in any other language — respond ONLY in that same language. Never switch languages regardless of the topic. When web search results are provided in [WEB SEARCH RESULTS], use that data to give accurate up-to-date answers and include clickable links using markdown format [text](url). Help with any task. Never mention Llama, Groq, Gemini, Tavily or Meta — you are Feed AI.`;
 
 let chats=JSON.parse(localStorage.getItem('feed_chats')||'[]');
 let activeId=null,chatStarted=false,pendingImg=null;
@@ -435,16 +448,39 @@ function mkStream(){
   const c=document.getElementById('msgs');
   const d=document.createElement('div');d.className='msg ai';
   const av=`<div class="av ai"><img src="${LOGO}" alt="F"></div>`;
+  const wrap=document.createElement('div');wrap.style.cssText='flex:1;min-width:0;display:flex;flex-direction:column;gap:6px';
   const bub=document.createElement('div');bub.className='bub';
   bub.innerHTML='<span class="dot"></span><span class="dot"></span><span class="dot"></span>';
-  d.innerHTML=av;d.appendChild(bub);c.appendChild(d);scrollBot();
+  const srcBox=document.createElement('div');srcBox.className='sources';srcBox.style.display='none';
+  wrap.appendChild(bub);wrap.appendChild(srcBox);
+  d.innerHTML=av+'';d.querySelector('.av').after(wrap);
+  // Fix: rebuild properly
+  d.innerHTML='';d.appendChild(document.querySelector('.av.ai')?.cloneNode(true)||Object.assign(document.createElement('div'),{className:'av ai',innerHTML:`<img src="${LOGO}" alt="F">`}));
+  d.appendChild(wrap);
+  c.appendChild(d);scrollBot();
   let full='',go=false;
   return{
+    search(){
+      bub.innerHTML='<span class="searching"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.5"/><path d="M10 10l2.5 2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>Ищу в интернете…</span>';
+    },
     add(t){
       if(!go){bub.innerHTML='';go=true;}
       full+=t;
       const safe=full.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br>').replace(/\*\*(.*?)\*\*/g,'<strong>$1</strong>').replace(/`(.*?)`/g,'<code style="background:rgba(255,255,255,.09);padding:1px 5px;border-radius:4px;font-size:13px;font-family:monospace">$1</code>');
       bub.innerHTML=safe+'<span class="cur"></span>';scrollBot();
+    },
+    addSources(sources){
+      if(!sources||!sources.length)return;
+      srcBox.style.display='flex';
+      srcBox.innerHTML='<div class="src-label">Источники</div>';
+      sources.slice(0,3).forEach(s=>{
+        const domain=s.url.replace(/https?:\/\//,'').split('/')[0];
+        const a=document.createElement('a');
+        a.className='src-link';a.href=s.url;a.target='_blank';a.rel='noopener';
+        a.innerHTML=`<svg class="src-icon" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.3"/><path d="M7 1.5c-1.5 2-1.5 9 0 11M1.5 7h11M2 4h10M2 10h10" stroke="currentColor" stroke-width="1.1"/></svg><span class="src-title">${s.title||domain}</span><span class="src-domain">${domain}</span>`;
+        srcBox.appendChild(a);
+      });
+      scrollBot();
     },
     done(){bub.querySelector('.cur')?.remove();return full;}
   };
@@ -499,7 +535,12 @@ async function send(){
       for(const line of lines){
         if(!line.startsWith('data: '))continue;
         const raw=line.slice(6).trim();if(raw==='[DONE]')continue;
-        try{const j=JSON.parse(raw);if(j.token){full+=j.token;sb.add(j.token);}}catch{}
+        try{
+          const j=JSON.parse(raw);
+          if(j.sources){sb.addSources(j.sources);}
+          else if(j.searching){sb.search();}
+          else if(j.token){full+=j.token;sb.add(j.token);}
+        }catch{}
       }
     }
     sb.done();c.messages.push({role:'assistant',content:full});saveChats();
@@ -538,7 +579,7 @@ async function sendVoice(text){
   try{
     const res=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({messages:c.messages})});
     const reader=res.body.getReader(),dec=new TextDecoder();let buf='';
-    while(true){const{done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop();for(const line of lines){if(!line.startsWith('data: '))continue;const raw=line.slice(6).trim();if(raw==='[DONE]')continue;try{const j=JSON.parse(raw);if(j.token){full+=j.token;sb.add(j.token);}}catch{}}}
+    while(true){const{done,value}=await reader.read();if(done)break;buf+=dec.decode(value,{stream:true});const lines=buf.split('\n');buf=lines.pop();for(const line of lines){if(!line.startsWith('data: '))continue;const raw=line.slice(6).trim();if(raw==='[DONE]')continue;try{const j=JSON.parse(raw);if(j.sources)sb.addSources(j.sources);else if(j.token){full+=j.token;sb.add(j.token);}}catch{}}}
     sb.done();c.messages.push({role:'assistant',content:full});saveChats();
   }catch(e){full='Ошибка соединения.';sb.add('⚠ '+full);sb.done();}
   if(full&&voiceOn){
