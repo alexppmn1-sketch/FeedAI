@@ -18,14 +18,14 @@ export default async function handler(req, res) {
   }
 
   const GROQ_KEY = process.env.GROQ_API_KEY;
-  const TAVILY_KEY = process.env.TAVILY_API_KEY;
+  const SERPER_KEY = process.env.SERPER_API_KEY;   // ← новая переменная
 
   if (!GROQ_KEY) {
     res.write(`data: ${JSON.stringify({ error: 'GROQ_API_KEY not configured' })}\n\n`);
     return res.end();
   }
 
-  // === Определение модели ===
+  // === Определение модели (текст / vision) ===
   const hasImage = messages.some(msg => {
     if (!msg.content) return false;
     if (typeof msg.content === 'string') return msg.content.includes('data:image');
@@ -42,7 +42,7 @@ export default async function handler(req, res) {
     ? "meta-llama/llama-4-scout-17b-16e-instruct" 
     : "llama-3.1-8b-instant";
 
-  console.log(`[DEBUG] Запрос. Модель: ${model} | Изображение: ${hasImage} | Сообщений: ${messages.length}`);
+  console.log(`[DEBUG] Запрос. Модель: ${model} | Изображение: ${hasImage}`);
 
   const lastUserMsg = [...messages].reverse().find(m => m.role === 'user');
   const userText = typeof lastUserMsg?.content === 'string' ? lastUserMsg.content : '';
@@ -50,20 +50,21 @@ export default async function handler(req, res) {
   let searchContext = '';
   let searchSources = [];
 
-  if (TAVILY_KEY && userText && needsSearch(userText)) {
+  // === Поиск через Serper ===
+  if (SERPER_KEY && userText && needsSearch(userText)) {
     res.write(`data: ${JSON.stringify({ searching: true })}\n\n`);
     try {
-      const result = await tavilySearch(userText, TAVILY_KEY);
-      if (result.results?.length) {
-        searchContext = '\n\n[WEB SEARCH RESULTS]:\n';
-        result.results.slice(0, 5).forEach((r, i) => {
-          searchContext += `\n[${i+1}] ${r.title}\nURL: ${r.url}\nContent: ${r.content}\n`;
-          searchSources.push({ title: r.title, url: r.url });
+      const result = await serperSearch(userText, SERPER_KEY);
+      if (result.organic?.length) {
+        searchContext = '\n\n[WEB SEARCH RESULTS - актуальные данные]:\n';
+        result.organic.slice(0, 5).forEach((r, i) => {
+          searchContext += `\n[${i+1}] ${r.title}\nURL: ${r.link}\nContent: ${r.snippet}\n`;
+          searchSources.push({ title: r.title, url: r.link });
         });
-        searchContext += '\n[END SEARCH RESULTS]\n';
+        searchContext += '\n[END SEARCH RESULTS]\nИспользуй эти данные для точного ответа.';
       }
     } catch (e) {
-      console.error('[Tavily] Error:', e);
+      console.error('[Serper] Error:', e);
     }
   }
 
@@ -94,7 +95,6 @@ export default async function handler(req, res) {
       })
     });
 
-    // ←←← НОВАЯ ОБРАБОТКА ОШИБОК
     if (!r.ok) {
       const errorText = await r.text();
       console.error(`[Groq Error] ${r.status}:`, errorText);
@@ -124,15 +124,11 @@ export default async function handler(req, res) {
           try {
             const json = JSON.parse(raw);
             const delta = json.choices?.[0]?.delta?.content;
-            if (delta) {
-              res.write(`data: ${JSON.stringify({ token: delta })}\n\n`);
-            }
+            if (delta) res.write(`data: ${JSON.stringify({ token: delta })}\n\n`);
           } catch (e) {}
         }
       }
     }
-
-    console.log('[DEBUG] Streaming успешно завершён');
   } catch (e) {
     console.error('[Chat Error]:', e);
     res.write(`data: ${JSON.stringify({ error: e.message || 'Unknown error' })}\n\n`);
@@ -141,21 +137,30 @@ export default async function handler(req, res) {
   res.end();
 }
 
+// === Улучшенная функция поиска (ловит вопросы про год, дату и т.д.) ===
 function needsSearch(query) {
-  const keywords = ['погода','weather','прогноз','новости','news','курс','price','цена','биткоин','bitcoin','найди','find','поищи'];
+  const keywords = [
+    'погода','weather','прогноз','forecast','сейчас','now','сегодня','today',
+    'год','year','какой год','какой сейчас год','текущий год','current year',
+    'новости','news','последние','latest','курс','price','цена','биткоин','bitcoin'
+  ];
   const q = query.toLowerCase();
   return keywords.some(k => q.includes(k));
 }
 
-async function tavilySearch(query, apiKey) {
-  const r = await fetch('https://api.tavily.com/search', {
+// === Новый поиск через Serper.dev ===
+async function serperSearch(query, apiKey) {
+  const r = await fetch('https://google.serper.dev/search', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'X-API-KEY': apiKey,
+      'Content-Type': 'application/json'
+    },
     body: JSON.stringify({
-      api_key: apiKey,
-      query,
-      search_depth: 'basic',
-      max_results: 5
+      q: query,
+      gl: 'ru',     // Россия
+      hl: 'ru',     // русский язык
+      num: 6
     })
   });
   return r.json();
