@@ -6,7 +6,7 @@ require('dotenv').config();
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY });
 
-// === Tavily Tool (поиск в интернете) ===
+// === Tavily Tool ===
 const tavilyTool = {
   type: "function",
   function: {
@@ -23,24 +23,43 @@ const tavilyTool = {
   },
 };
 
-// === Выбор модели: текст или vision ===
-function getModel(messages) {
-  // Проверяем, есть ли в любом сообщении изображение
-  const hasImage = messages.some(msg => 
-    Array.isArray(msg.content) && 
-    msg.content.some(item => item.type === "image_url")
-  );
+// === Улучшенное определение, есть ли изображение ===
+function hasImage(messages) {
+  return messages.some(msg => {
+    if (!msg.content) return false;
+    
+    // Если content — строка и содержит base64
+    if (typeof msg.content === 'string') {
+      return msg.content.includes('data:image');
+    }
+    
+    // Если content — массив (стандартный формат OpenAI/Groq)
+    if (Array.isArray(msg.content)) {
+      return msg.content.some(item => 
+        item.type === 'image_url' || 
+        item.type === 'image' ||
+        (item.image_url && item.image_url.url && item.image_url.url.includes('data:image'))
+      );
+    }
+    return false;
+  });
+}
 
-  if (hasImage) {
-    console.log("[Model] Используем Llama 4 Scout (vision)");
+// === Выбор модели ===
+function getModel(messages) {
+  const imageDetected = hasImage(messages);
+  console.log(`[DEBUG] Изображение обнаружено: ${imageDetected}`);
+
+  if (imageDetected) {
+    console.log("[Model] → Llama 4 Scout (vision)");
     return "meta-llama/llama-4-scout-17b-16e-instruct";
   }
 
-  console.log("[Model] Используем Llama 3.1 8B (текст)");
-  return "llama-3.1-8b-instant"; // твоя текущая модель
+  console.log("[Model] → Llama 3.1 8B (текст)");
+  return "llama-3.1-8b-instant";
 }
 
-// === Выполнение инструмента Tavily ===
+// === Выполнение Tavily ===
 async function executeTool(toolCall) {
   if (toolCall.function.name === "web_search") {
     const args = JSON.parse(toolCall.function.arguments);
@@ -62,16 +81,18 @@ async function executeTool(toolCall) {
   return null;
 }
 
-// === Основной обработчик ===
+// === Главный обработчик ===
 module.exports = async function chatHandler(req, res) {
   try {
-    const { messages, model: requestedModel } = req.body;
+    const { messages } = req.body;
+    console.log("[DEBUG] Получено сообщений:", messages?.length || 0);
+    console.log("[DEBUG] Полный body:", JSON.stringify(req.body, null, 2)); // ← это самое важное для отладки
 
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "messages required" });
     }
 
-    const model = requestedModel || getModel(messages); // автоматический выбор
+    const model = getModel(messages);
 
     let currentMessages = [...messages];
     const maxIterations = 5;
@@ -83,7 +104,7 @@ module.exports = async function chatHandler(req, res) {
       const completion = await groq.chat.completions.create({
         model: model,
         messages: currentMessages,
-        tools: model.includes("scout") ? [tavilyTool] : undefined, // tool calling лучше работает на Scout
+        tools: model.includes("scout") ? [tavilyTool] : undefined,
         tool_choice: "auto",
         temperature: 0.7,
         max_tokens: 1024,
@@ -95,12 +116,10 @@ module.exports = async function chatHandler(req, res) {
       if (!responseMessage.tool_calls || responseMessage.tool_calls.length === 0) {
         return res.json({
           content: responseMessage.content,
-          model: model, // для отладки
-          usage: completion.usage,
+          modelUsed: model,
         });
       }
 
-      // Выполняем инструменты
       const toolResults = [];
       for (const toolCall of responseMessage.tool_calls) {
         const result = await executeTool(toolCall);
@@ -113,6 +132,6 @@ module.exports = async function chatHandler(req, res) {
 
   } catch (error) {
     console.error("Chat error:", error);
-    res.status(500).json({ error: "Внутренняя ошибка сервера" });
+    res.status(500).json({ error: error.message || "Внутренняя ошибка сервера" });
   }
 };
