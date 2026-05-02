@@ -1,0 +1,24 @@
+{
+  "name": "Feed AI",
+  "short_name": "Feed AI",
+  "description": "Твой персональный AI-ассистент",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#04020a",
+  "theme_color": "#04020a",
+  "icons": [
+    {
+      "src": "/star-logo.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/star-logo.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}
